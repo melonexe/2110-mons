@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AES67 / ST 2110 Monitor</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ───────────────────────────────────────── -->
+  <header>
+    <h1>AES67 Monitor</h1>
+
+    <div class="header-controls">
+      <span class="label">Device</span>
+      <select id="device-select" style="min-width:220px">
+        <option value="default">default</option>
+      </select>
+
+      <span class="label">Channels</span>
+      <input id="ch-count" type="number" value="8" min="1" max="128" style="width:52px" />
+
+      <span class="label">Rate</span>
+      <select id="sample-rate">
+        <option value="48000">48 kHz</option>
+        <option value="96000">96 kHz</option>
+        <option value="44100">44.1 kHz</option>
+      </select>
+
+      <button id="btn-start">&#9654; Start</button>
+      <button id="btn-stop">&#9646;&#9646; Stop</button>
+      <button id="btn-reset-clip" class="danger">Reset Clip</button>
+      <button id="btn-reset-int">Reset Int.</button>
+
+      <button id="btn-sdp" style="margin-left:auto">+ SDP Subscribe</button>
+
+      <span class="label">Loudness Ch</span>
+      <input id="loudness-ch" type="number" value="1" min="1" max="128"
+             title="Which channel to display in the EBU R128 panel"
+             style="width:44px" />
+    </div>
+  </header>
+
+  <!-- ── Main ─────────────────────────────────────────── -->
+  <main>
+
+    <!-- Meter panel -->
+    <div id="meter-panel">
+      <div id="scale-ruler">
+        <div></div>
+        <div class="ruler-track">
+          <span style="position:absolute;left:0%">-60</span>
+          <span style="position:absolute;left:20%">-48</span>
+          <span style="position:absolute;left:40%">-36</span>
+          <span style="position:absolute;left:60%">-24</span>
+          <span style="position:absolute;left:70%">-18</span>
+          <span style="position:absolute;left:80%">-12</span>
+          <span style="position:absolute;left:85%">-9</span>
+          <span style="position:absolute;left:90%">-6</span>
+          <span style="position:absolute;left:95%">-3</span>
+          <span style="position:absolute;right:0">0</span>
+        </div>
+        <div></div>
+        <div></div>
+      </div>
+      <p style="color:#555;font-size:11px;padding:16px 0">
+        Select a device and press <strong style="color:#aaa">Start</strong> to begin monitoring,
+        or use <strong style="color:#aaa">+ SDP Subscribe</strong> to subscribe to a stream by SDP.
+      </p>
+    </div>
+
+    <!-- Side panel -->
+    <div id="side-panel">
+
+      <!-- ── Listen / audio player ────────────────────── -->
+      <div class="panel-section">
+        <div class="panel-section-title">Listen</div>
+        <div id="listen-section">
+          <div class="listen-row">
+            <button id="btn-listen">&#9654; Listen</button>
+            <span class="label">Pair</span>
+            <select id="listen-pair">
+              <option value="0,1">CH 1+2</option>
+              <option value="2,3">CH 3+4</option>
+              <option value="4,5">CH 5+6</option>
+              <option value="6,7">CH 7+8</option>
+            </select>
+            <span class="label">Vol</span>
+            <input id="listen-vol" type="range" min="0" max="1" step="0.01" value="0.8"
+                   style="width:60px" />
+          </div>
+          <div class="listen-status">
+            <div id="listen-buf-track" class="buf-track">
+              <div id="listen-buf-fill" class="buf-fill"></div>
+            </div>
+            <span id="listen-state" class="label">Stopped</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── EBU R128 Loudness ─────────────────────────── -->
+      <div class="panel-section">
+        <div class="panel-section-title">EBU R128 Loudness</div>
+        <div id="loudness-section">
+          <div class="loudness-card" id="lk-m">
+            <div class="loudness-title">Momentary (400 ms)</div>
+            <div class="loudness-value">-∞</div>
+            <div class="loudness-unit">LUFS M</div>
+          </div>
+          <div class="loudness-grid">
+            <div class="loudness-card loudness-card-sm" id="lk-st">
+              <div class="loudness-title">Short-term</div>
+              <div class="loudness-value">-∞</div>
+              <div class="loudness-unit">LUFS ST</div>
+            </div>
+            <div class="loudness-card loudness-card-sm" id="lk-i">
+              <div class="loudness-title">Integrated</div>
+              <div class="loudness-value">-∞</div>
+              <div class="loudness-unit">LUFS I</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SAP stream discovery ──────────────────────── -->
+      <div class="panel-section" style="flex:1;display:flex;flex-direction:column;min-height:0">
+        <div class="panel-section-title">SAP Stream Discovery</div>
+        <div id="streams-section" style="flex:1;overflow-y:auto;padding:8px 12px">
+          <p class="no-streams">Listening for SAP announcements…</p>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ── Status bar ────────────────────────────────────── -->
+  <footer>
+    <div id="status-dot" class="status-dot"></div>
+    <span id="status-text">Connecting…</span>
+    <span style="margin-left:auto;color:#333">AES67 / SMPTE ST 2110 Monitor</span>
+  </footer>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     SDP Subscribe Modal
+     ══════════════════════════════════════════════════════ -->
+<div id="sdp-modal" class="modal-backdrop" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Subscribe to AES67 Stream via SDP</span>
+      <button class="modal-close" id="btn-sdp-close">&#10005;</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="label" style="margin-bottom:4px">Paste SDP below:</div>
+      <textarea id="sdp-input" spellcheck="false"
+        placeholder="v=0&#10;o=- ...&#10;s=Stream Name&#10;m=audio ..."></textarea>
+
+      <!-- Parsed stream info (populated after Parse) -->
+      <div id="sdp-info" class="sdp-info" style="display:none"></div>
+
+      <!-- Subscription result message -->
+      <div id="sdp-result" class="sdp-result" style="display:none"></div>
+    </div>
+
+    <div class="modal-footer">
+      <button id="btn-sdp-parse">Parse SDP</button>
+      <button id="btn-sdp-subscribe" disabled>Subscribe &amp; Monitor</button>
+      <button id="btn-sdp-cancel" class="modal-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

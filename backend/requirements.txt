@@ -1,0 +1,8 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+websockets==12.0
+python-alsaaudio==0.10.0
+numpy==1.26.4
+pyloudnorm==0.1.1
+scipy==1.13.0
+httpx==0.27.0
