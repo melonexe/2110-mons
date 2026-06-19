@@ -160,14 +160,24 @@ class RTPReceiver:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _join_multicast(sock: socket.socket, mcast_addr: str, source_addr: str) -> None:
+    # IP_ADD_SOURCE_MEMBERSHIP (SSM, RFC 4607) = 39 on Linux.
+    # Python's socket module doesn't always expose this as a named constant.
+    IP_ADD_SOURCE_MEMBERSHIP = getattr(socket, "IP_ADD_SOURCE_MEMBERSHIP", 39)
+
     if source_addr:
-        # Source-Specific Multicast (SSM) — RFC 4607
-        # IP_ADD_SOURCE_MEMBERSHIP: struct ip_mreq_source { mcast, iface, source }
+        # Source-Specific Multicast: struct ip_mreq_source { mcast, iface, source }
         mreq = (socket.inet_aton(mcast_addr) +
                 socket.inet_aton("0.0.0.0") +
                 socket.inet_aton(source_addr))
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_SOURCE_MEMBERSHIP, mreq)
-        log.info("SSM join: group=%s source=%s", mcast_addr, source_addr)
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP, mreq)
+            log.info("SSM join: group=%s source=%s", mcast_addr, source_addr)
+        except OSError as e:
+            # Fall back to ASM if SSM fails (e.g. source on different subnet)
+            log.warning("SSM join failed (%s), falling back to ASM", e)
+            mreq = struct.pack("4sL", socket.inet_aton(mcast_addr), socket.INADDR_ANY)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            log.info("ASM join (fallback): group=%s", mcast_addr)
     else:
         mreq = struct.pack("4sL", socket.inet_aton(mcast_addr), socket.INADDR_ANY)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)

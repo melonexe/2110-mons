@@ -147,7 +147,7 @@ async def api_sdp_subscribe(request: Request):
     # Start the RTP receiver — replaces any existing monitor session
     monitor.start_from_rtp(parsed)
 
-    sub_id = f"sub_{stream.session_id or int(time.time())}"
+    sub_id = f"sub_{parsed.session_id or int(time.time())}"
     _subscriptions[sub_id] = {
         "id":           sub_id,
         "session_name": parsed.session_name,
