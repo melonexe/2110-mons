@@ -40,10 +40,11 @@ fi
 # ── 2. Build ──────────────────────────────────────────────────────────────────
 step "Building aes67-linux-daemon"
 
+# The CMakeLists.txt lives in the daemon/ subdirectory, not the repo root.
 cd "$INSTALL_DIR"
 mkdir -p build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake ../daemon -DCMAKE_BUILD_TYPE=Release
 make -j"$(nproc)"
 
 info "Build successful."
@@ -51,7 +52,8 @@ info "Build successful."
 # ── 3. Install binary ─────────────────────────────────────────────────────────
 step "Installing daemon binary"
 
-sudo install -m 755 daemon/aes67-daemon /usr/local/bin/aes67-daemon
+# The built binary is in the build/ directory
+sudo install -m 755 aes67-daemon /usr/local/bin/aes67-daemon
 info "Installed to /usr/local/bin/aes67-daemon"
 
 # ── 4. ALSA loopback configuration ───────────────────────────────────────────

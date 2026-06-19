@@ -6,10 +6,10 @@ Serves meter data and audio via WebSocket, REST API, and static frontend.
 import asyncio
 import json
 import logging
-import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Set
+from typing import Dict, Set
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -21,7 +21,6 @@ from audio_monitor import AudioMonitor, MonitorConfig, list_alsa_devices
 from audio_streamer import AudioStreamer
 from sap_listener import SAPListener
 from sdp_parser import parse_sdp
-import ravenna_api
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -32,22 +31,19 @@ audio_streamer = AudioStreamer()
 sap            = SAPListener()
 ws_clients:    Set[WebSocket] = set()
 
-FRONTEND_DIR      = Path(__file__).parent.parent / "frontend"
-PUSH_INTERVAL_MS  = 40  # meter WebSocket push rate (25 fps)
+# Simple in-process subscription registry (keyed by sub_id string)
+_subscriptions: Dict[str, dict] = {}
+
+FRONTEND_DIR     = Path(__file__).parent.parent / "frontend"
+PUSH_INTERVAL_MS = 40  # meter WebSocket push rate (25 fps)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Wire audio monitor → audio streamer
     monitor.set_audio_callback(audio_streamer.feed)
-
     sap.start()
-
-    # Background task: push audio frames to browser clients
     streamer_task = asyncio.create_task(audio_streamer.run_forever())
-
     yield
-
     streamer_task.cancel()
     monitor.stop()
     sap.stop()
@@ -119,24 +115,22 @@ async def set_audio_pair(body: dict):
     return {"status": "ok", "pair": [left, right]}
 
 
-# ── REST — SDP subscription ───────────────────────────────────────────────────
+# ── REST — SDP / RTP subscription ────────────────────────────────────────────
 
 @app.post("/api/sdp/parse")
 async def api_sdp_parse(request: Request):
-    """Parse an SDP body and return the structured stream info (no subscription)."""
+    """Parse an SDP and return structured stream info without subscribing."""
     sdp_text = (await request.body()).decode("utf-8", errors="replace").strip()
     if not sdp_text:
         return JSONResponse({"error": "Empty SDP body."}, status_code=400)
-    parsed = parse_sdp(sdp_text)
-    return parsed.to_dict()
+    return parse_sdp(sdp_text).to_dict()
 
 
 @app.post("/api/sdp/subscribe")
 async def api_sdp_subscribe(request: Request):
     """
-    Parse the SDP in the request body, then ask the Merging RAVENNA daemon
-    to subscribe to the primary stream.  Returns subscription details and
-    an ALSA device hint so the UI can auto-start monitoring.
+    Parse the SDP and start receiving the primary AES67 stream via direct
+    RTP multicast — no external driver or daemon required.
     """
     sdp_text = (await request.body()).decode("utf-8", errors="replace").strip()
     if not sdp_text:
@@ -148,32 +142,51 @@ async def api_sdp_subscribe(request: Request):
     if parsed.primary is None:
         return JSONResponse({"error": "No audio m= section found in SDP."}, status_code=400)
 
-    result = await ravenna_api.subscribe(sdp_text, parsed)
-    return result
+    stream = parsed.primary
+
+    # Start the RTP receiver — replaces any existing monitor session
+    monitor.start_from_rtp(parsed)
+
+    sub_id = f"sub_{stream.session_id or int(time.time())}"
+    _subscriptions[sub_id] = {
+        "id":           sub_id,
+        "session_name": parsed.session_name,
+        "multicast":    stream.multicast_addr,
+        "source":       stream.source_addr,
+        "port":         stream.port,
+        "encoding":     stream.encoding,
+        "channels":     stream.channels,
+        "sample_rate":  stream.sample_rate,
+        "ptp_domain":   stream.ptp_domain,
+        "redundant":    parsed.is_redundant,
+    }
+
+    return {
+        "status":   "subscribed",
+        "method":   "rtp-direct",
+        "sub_id":   sub_id,
+        "message": (
+            f"Receiving '{parsed.session_name}' via RTP multicast "
+            f"{stream.multicast_addr}:{stream.port}  "
+            f"({stream.encoding}, {stream.channels} ch @ {stream.sample_rate} Hz)."
+        ),
+        "parsed": parsed.to_dict(),
+    }
 
 
 @app.get("/api/sdp/subscriptions")
 async def api_sdp_list():
-    return {"subscriptions": ravenna_api.list_subscriptions()}
+    return {"subscriptions": list(_subscriptions.values())}
 
 
 @app.delete("/api/sdp/subscription/{sub_id}")
 async def api_sdp_delete(sub_id: str):
-    return await ravenna_api.unsubscribe(sub_id)
-
-
-@app.get("/api/daemon/status")
-async def api_daemon_status():
-    """Health check: ping aes67-daemon and return PTP sync status."""
-    ok, err = await ravenna_api._ping_daemon()
-    ptp = await ravenna_api.get_ptp_status() if ok else {}
-    return {
-        "daemon_online": ok,
-        "daemon_url": ravenna_api.DAEMON_URL,
-        "error": err if not ok else None,
-        "ptp": ptp,
-        "sinks": await ravenna_api.get_daemon_sinks() if ok else [],
-    }
+    if sub_id not in _subscriptions:
+        return JSONResponse({"error": f"Subscription '{sub_id}' not found."},
+                            status_code=404)
+    _subscriptions.pop(sub_id)
+    monitor.stop()
+    return {"status": "ok", "sub_id": sub_id}
 
 
 # ── WebSocket — real-time meter data ──────────────────────────────────────────
@@ -186,8 +199,8 @@ async def ws_meters(ws: WebSocket):
     try:
         while True:
             state = monitor.get_state()
-            state["streams"] = sap.get_streams()
-            state["subscriptions"] = ravenna_api.list_subscriptions()
+            state["streams"]       = sap.get_streams()
+            state["subscriptions"] = list(_subscriptions.values())
             await ws.send_text(json.dumps(state))
             await asyncio.sleep(PUSH_INTERVAL_MS / 1000)
     except WebSocketDisconnect:
@@ -203,11 +216,7 @@ async def ws_meters(ws: WebSocket):
 
 @app.websocket("/ws/audio")
 async def ws_audio(ws: WebSocket):
-    """
-    Binary WebSocket delivering interleaved float32 stereo PCM at the
-    stream's native sample rate.  Audio is pushed by the background streamer
-    task; this handler just keeps the connection alive.
-    """
+    """Binary float32 stereo PCM pushed from the audio streamer background task."""
     await ws.accept()
     audio_streamer.add_client(ws)
     try:
