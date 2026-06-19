@@ -132,17 +132,27 @@ dscp_general            34
 [$IFACE]
 EOF
 
-# systemd service override to use our config file
-sudo mkdir -p /etc/systemd/system/ptp4l.service.d
-sudo tee /etc/systemd/system/ptp4l.service.d/override.conf > /dev/null <<EOF
+# Ubuntu's linuxptp package ships the binary but no systemd service file,
+# so we write the complete unit ourselves.
+sudo tee /etc/systemd/system/ptp4l.service > /dev/null <<EOF
+[Unit]
+Description=IEEE 1588 Precision Time Protocol (PTP) slave
+Documentation=man:ptp4l(8)
+After=network.target
+
 [Service]
-ExecStart=
+Type=simple
 ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l.conf -i $IFACE
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable ptp4l
-sudo systemctl restart ptp4l
+sudo systemctl start ptp4l
 
 info "ptp4l started (slave-only, software timestamps, interface: $IFACE)."
 info "Check PTP lock: journalctl -u ptp4l -f"
